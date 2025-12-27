@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch: # 允许你手动点击按钮触发编译
 
 jobs:
   Pikafish-x86-64:
@@ -14,6 +15,7 @@ jobs:
       COMP: clang
       EXE: pikafish${{ matrix.arch }}${{ matrix.config.ext }}
     strategy:
+      fail-fast: false
       matrix:
         config:
           - name: Linux
@@ -37,16 +39,26 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: clang64
+          update: true
           install: mingw-w64-clang-x86_64-clang make git
 
-      - name: Compile ${{ matrix.arch }} build
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
-          make -j build EXE=$EXE
+          sudo apt-get update
+          sudo apt-get install -y clang make
+
+      - name: Compile ${{ matrix.arch }} build (PGO + LTO)
+        run: |
+          # 核心优化：
+          # 1. profile-build: 启用 PGO (Profile-Guided Optimization)，通过模拟对局优化分支预测
+          # 2. LTO=1: 启用链接时优化 (Link-Time Optimization)
+          # 3. -j: 并行编译
+          make -j profile-build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE LTO=1
           make strip EXE=$EXE
           cp $EXE ../
 
       # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v4
         with:	
           name: Pikafish-${{ matrix.config.name }}${{ matrix.arch }}
@@ -67,14 +79,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile apple-silicon build
+      - name: Compile apple-silicon build (PGO + LTO)
         run: |
-          make -j build EXE=$EXE
+          # MacOS 同样启用 PGO
+          make -j profile-build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE LTO=1
           make strip EXE=$EXE
           cp $EXE ../
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v4
         with:
           name: Pikafish-MacOS-apple-silicon
@@ -89,6 +100,7 @@ jobs:
       EXE: pikafish-${{ matrix.arch }}
       LDFLAGS: "-static -Wno-unused-command-line-argument"
     strategy:
+      fail-fast: false
       matrix:
         arch: ["armv8-dotprod", "armv8"]
     defaults:
@@ -111,13 +123,13 @@ jobs:
 
       - name: Compile ${{ matrix.arch }} build
         run: |
+          # Android 必须保持标准编译，不能使用 profile-build
+          # 因为 GitHub Runner (x86) 无法运行生成的 ARM 二进制文件进行 Profile 采样
           export PATH=${{ env.ANDROID_NDK_BIN }}:$PATH
           make -j build EXE=$EXE
           make strip EXE=$EXE
           cp $EXE ../
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v4
         with:	
           name: Pikafish-Android-${{ matrix.arch }}
@@ -150,8 +162,6 @@ jobs:
           cd Wiki
           rm -rf .git
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v4
         with:
           name: Pikafish
