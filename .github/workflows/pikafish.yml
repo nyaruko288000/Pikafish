@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-  workflow_dispatch: # 允许你手动点击按钮触发编译
+  workflow_dispatch:
 
 jobs:
   Pikafish-x86-64:
@@ -48,17 +48,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang make
 
-      - name: Compile ${{ matrix.arch }} build (PGO + LTO)
+      - name: Compile ${{ matrix.arch }} build
         run: |
-          # 核心优化：
-          # 1. profile-build: 启用 PGO (Profile-Guided Optimization)，通过模拟对局优化分支预测
-          # 2. LTO=1: 启用链接时优化 (Link-Time Optimization)
-          # 3. -j: 并行编译
-          make -j profile-build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE LTO=1
+          # 自动判断逻辑：
+          # 如果架构名包含 avx512 或 vnni，说明服务器跑不动 PGO，使用标准 build + O3
+          # 否则（avx2/bmi2/sse41），使用狂暴模式 profile-build
+          
+          if [[ "${{ matrix.arch }}" == *"-avx512"* ]] || [[ "${{ matrix.arch }}" == *"-vnni"* ]]; then
+              echo ">>> Detected AVX512/VNNI architecture. GitHub Runner cannot run PGO for this. Fallback to standard optimized build."
+              make -j build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE EXTRACXXFLAGS="-O3 -DNDEBUG"
+          else
+              echo ">>> Detected Standard architecture. Enabling PGO + LTO."
+              make -j profile-build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE LTO=1 EXTRACXXFLAGS="-O3 -DNDEBUG"
+          fi
+          
           make strip EXE=$EXE
           cp $EXE ../
 
-      # Artifacts automatically get zipped.
       - uses: actions/upload-artifact@v4
         with:	
           name: Pikafish-${{ matrix.config.name }}${{ matrix.arch }}
@@ -79,10 +85,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile apple-silicon build (PGO + LTO)
+      # MacOS M1/M2 可以完整支持 PGO，保持最强模式
+      - name: Compile apple-silicon build (PGO + LTO + O3 + NDEBUG)
         run: |
-          # MacOS 同样启用 PGO
-          make -j profile-build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE LTO=1
+          make -j profile-build ARCH=${{ env.ARCH }} COMP=${{ env.COMP }} EXE=$EXE LTO=1 EXTRACXXFLAGS="-O3 -DNDEBUG"
           make strip EXE=$EXE
           cp $EXE ../
 
@@ -123,10 +129,8 @@ jobs:
 
       - name: Compile ${{ matrix.arch }} build
         run: |
-          # Android 必须保持标准编译，不能使用 profile-build
-          # 因为 GitHub Runner (x86) 无法运行生成的 ARM 二进制文件进行 Profile 采样
           export PATH=${{ env.ANDROID_NDK_BIN }}:$PATH
-          make -j build EXE=$EXE
+          make -j build EXE=$EXE EXTRACXXFLAGS="-O3 -DNDEBUG"
           make strip EXE=$EXE
           cp $EXE ../
 
